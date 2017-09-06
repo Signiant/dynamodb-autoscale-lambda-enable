@@ -1,7 +1,6 @@
 import boto3
 import json
 import sys,os
-import pprint
 
 metric_info=[
     {
@@ -113,41 +112,83 @@ def scaling_policy_exists(table_name,scalable_dimension,metric_type):
     return exists
 
 def put_scaling_policy(table_name,metric_type,scalable_dimension):
-    print "put_scaling_policy"
+    status=False
+    response=None
+    policy_name=get_policy_name(table_name,metric_type)
+
+    print "Putting scaling policy for " + table_name + " for dimension " + scalable_dimension + " metric " + metric_type
+    client = boto3.client('application-autoscaling')
+
+    try:
+        response = client.put_scaling_policy(
+            PolicyName=policy_name,
+            ServiceNamespace='dynamodb',
+            ResourceId='table/' + table_name,
+            ScalableDimension=scalable_dimension,
+            PolicyType='TargetTrackingScaling',
+            TargetTrackingScalingPolicyConfiguration={
+                'TargetValue': 50,
+                'PredefinedMetricSpecification': {
+                    'PredefinedMetricType': metric_type
+                }
+            }
+        )
+
+    except Exception, e:
+        print "Failed to put scaling policy " + str(e)
+
+    if response:
+        if response['ResponseMetadata']['HTTPStatusCode'] == 200:
+            status=True
+
+    return status
 
 def lambda_handler(event, context):
-    print("Received event: " + json.dumps(event, indent=2))
+    status=True
+    # print("Received event: " + json.dumps(event, indent=2))
+    table_name = event['detail']['requestParameters']['tableName']
 
-def main(argv):
-    table_name='DEVOPS_SES_DELIVERIES'  # TODO get this from the event
-    rolename=os.environ['rolename']
-    max_tput=os.environ['max_tput']
-    min_tput=os.environ['min_tput']
+    if table_name:
+        print "New table detected " + table_name + " - Enabling autoscaling"
+        
+        rolename=os.environ['rolename']
+        max_tput=os.environ['max_tput']
+        min_tput=os.environ['min_tput']
 
-    role_arn=get_role_arn(os.environ['rolename'])
-    print "Role ARN is %s" % role_arn
+        role_arn=get_role_arn(os.environ['rolename'])
+        print "Role ARN is %s" % role_arn
 
-    if role_arn:
-        print "Role " + rolename + " found in IAM"
+        if role_arn:
+            print "Role " + rolename + " found in IAM"
 
-        # Now see if the items we need exist and create if not
-        for metric in metric_info:
-            print "Checking for scalable target for " + metric['operation'] + " operations"
-            if scalable_target_exists(table_name,metric['scaleable_dimension']):
-                print "Scalable target exists for table " + table_name + " for " + metric['scaleable_dimension']
-            else:
-                print "No scalable target exists for table " + table_name + " for " + metric['scaleable_dimension'] + " - CREATING"
-                if register_scalable_target(table_name,metric['scaleable_dimension'],role_arn,min_tput,max_tput):
-                    print "Successfully registered scalable target for " + table_name + " for " + metric['scaleable_dimension']
+            # Now see if the items we need exist and create if not
+            for metric in metric_info:
+                print "Checking for scalable target for " + metric['operation'] + " operations"
+                if scalable_target_exists(table_name,metric['scaleable_dimension']):
+                    print "Scalable target exists for table " + table_name + " for " + metric['scaleable_dimension']
                 else:
-                    print "Failed to register scalable target for " + table_name + " for " + metric['scaleable_dimension']
+                    print "No scalable target exists for table " + table_name + " for " + metric['scaleable_dimension'] + " - CREATING"
+                    if register_scalable_target(table_name,metric['scaleable_dimension'],role_arn,min_tput,max_tput):
+                        print "Successfully registered scalable target for " + table_name + " for " + metric['scaleable_dimension']
+                    else:
+                        print "Failed to register scalable target for " + table_name + " for " + metric['scaleable_dimension']
+                        status=False
 
-            if scaling_policy_exists(table_name,metric['scaleable_dimension'],metric['metric_type']):
-                print "Scaling policy exists for table " + table_name + " for " + metric['metric_type']
-            else:
-                print "No scaling policy exists for table " + table_name + " for " + metric['metric_type'] + " - CREATING"
+                if scaling_policy_exists(table_name,metric['scaleable_dimension'],metric['metric_type']):
+                    print "Scaling policy exists for table " + table_name + " for " + metric['metric_type']
+                else:
+                    print "No scaling policy exists for table " + table_name + " for " + metric['metric_type'] + " - CREATING"
+                    if put_scaling_policy(table_name,metric['metric_type'],metric['scaleable_dimension']):
+                        print "Successfully registered scaling policy for table " + table_name + " for " + metric['metric_type']
+                    else:
+                        print "Failed to register scaling policy for table " + table_name + " for " + metric['metric_type']
+                        status=False
+        else:
+            print "Unable to find role " + os.environ['rolename'] + " in IAM - TERMINATING"
+            status=False
     else:
-        print "Unable to find role " + os.environ['rolename'] + " in IAM - TERMINATING"
+        print "Unable to determine table name from incoming event"
+        print("Received event: " + json.dumps(event, indent=2))
+        status=False
 
-if __name__ == "__main__":
-   main(sys.argv[1:])
+    return status
