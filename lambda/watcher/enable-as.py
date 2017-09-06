@@ -1,22 +1,25 @@
 import boto3
 import json
 import sys,os
+import pprint
 
 metric_info=[
     {
         "operation": "read",
-        "scaleable_dimension": "dynamodb:table:ReadCapacityUnits",
+        "table_scaleable_dimension": "dynamodb:table:ReadCapacityUnits",
+        "index_scaleable_dimension": "dynamodb:index:ReadCapacityUnits",
         "metric_type": "DynamoDBReadCapacityUtilization"
     },
     {
         "operation": "write",
-        "scaleable_dimension": "dynamodb:table:WriteCapacityUnits",
+        "table_scaleable_dimension": "dynamodb:table:WriteCapacityUnits",
+        "index_scaleable_dimension": "dynamodb:index:WriteCapacityUnits",
         "metric_type": "DynamoDBWriteCapacityUtilization"
     }
 ]
 
-def get_policy_name(table_name,metric_type):
-    policy_name=metric_type + ":table/" + table_name
+def get_resource_policy_name(resource_id,metric_type):
+    policy_name=metric_type + ":" + resource_id
     return policy_name
 
 def get_role_arn(role_name):
@@ -34,18 +37,18 @@ def get_role_arn(role_name):
 
     return role_arn
 
-def scalable_target_exists(table_name,scalable_dimension):
+def scalable_target_exists(resource_id,scalable_dimension):
     exists=False
     response=None
 
-    print "Checking if scalable target exists for " + table_name + " for dimension " + scalable_dimension
+    print "Checking if scalable target exists for " + resource_id + " for dimension " + scalable_dimension
     client = boto3.client('application-autoscaling')
 
     try:
         response = client.describe_scalable_targets(
             ServiceNamespace='dynamodb',
             ResourceIds=[
-                'table/' + table_name,
+                resource_id,
             ],
             ScalableDimension=scalable_dimension
         )
@@ -58,17 +61,17 @@ def scalable_target_exists(table_name,scalable_dimension):
 
     return exists
 
-def register_scalable_target(table_name,scalable_dimension,role_arn,min_tput,max_tput):
+def register_scalable_target(resource_id,scalable_dimension,role_arn,min_tput,max_tput):
     status=False
     response=None
 
-    print "Registering scalable target for " + table_name + " for dimension " + scalable_dimension
+    print "Registering scalable target for " + resource_id + " for dimension " + scalable_dimension
     client = boto3.client('application-autoscaling')
 
     try:
         response = client.register_scalable_target(
             ServiceNamespace='dynamodb',
-            ResourceId='table/' + table_name,
+            ResourceId=resource_id,
             ScalableDimension=scalable_dimension,
             MinCapacity=int(min_tput),
             MaxCapacity=int(max_tput),
@@ -83,10 +86,10 @@ def register_scalable_target(table_name,scalable_dimension,role_arn,min_tput,max
 
     return status
 
-def scaling_policy_exists(table_name,scalable_dimension,metric_type):
+def scaling_policy_exists(resource_id,scalable_dimension,metric_type):
     exists=False
     response=None
-    policy_name=get_policy_name(table_name,metric_type)
+    policy_name=get_resource_policy_name(resource_id,metric_type)
 
     print "Checking if scaling policy exists with name  " + policy_name
 
@@ -99,7 +102,7 @@ def scaling_policy_exists(table_name,scalable_dimension,metric_type):
                     policy_name,
                 ],
                 ServiceNamespace='dynamodb',
-                ResourceId='table/' + table_name,
+                ResourceId=resource_id,
                 ScalableDimension=scalable_dimension
             )
         except Exception, e:
@@ -111,19 +114,19 @@ def scaling_policy_exists(table_name,scalable_dimension,metric_type):
 
     return exists
 
-def put_scaling_policy(table_name,metric_type,scalable_dimension):
+def put_scaling_policy(resource_id,metric_type,scalable_dimension):
     status=False
     response=None
-    policy_name=get_policy_name(table_name,metric_type)
+    policy_name=get_resource_policy_name(resource_id,metric_type)
 
-    print "Putting scaling policy for " + table_name + " for dimension " + scalable_dimension + " metric " + metric_type
+    print "Putting scaling policy for " + resource_id + " for dimension " + scalable_dimension + " metric " + metric_type
     client = boto3.client('application-autoscaling')
 
     try:
         response = client.put_scaling_policy(
             PolicyName=policy_name,
             ServiceNamespace='dynamodb',
-            ResourceId='table/' + table_name,
+            ResourceId=resource_id,
             ScalableDimension=scalable_dimension,
             PolicyType='TargetTrackingScaling',
             TargetTrackingScalingPolicyConfiguration={
@@ -143,52 +146,84 @@ def put_scaling_policy(table_name,metric_type,scalable_dimension):
 
     return status
 
+# resource type is one of index or table
+def handle_resource(resource_id,resource_type):
+    status=True
+    dimension=None
+
+    rolename=os.environ['rolename']
+    max_tput=os.environ['max_tput']
+    min_tput=os.environ['min_tput']
+
+    role_arn=get_role_arn(os.environ['rolename'])
+    print "Role ARN is %s" % role_arn
+
+    if role_arn:
+        print "Role " + rolename + " found in IAM"
+
+        # are we dealing with an index or table scalable dimension
+        if resource_type == 'index':
+            dimension='index_scaleable_dimension'
+        elif resource_type == 'table':
+            dimension='table_scaleable_dimension'
+        else:
+            print "Unknown resource type"
+            status=False
+
+        if status:
+            # Now see if the items we need exist and create if not
+            for metric in metric_info:
+                print "Checking for scalable target for " + metric['operation'] + " operations"
+                if scalable_target_exists(resource_id,metric[dimension]):
+                    print "Scalable target exists for table " + resource_id + " for " + metric[dimension]
+                else:
+                    print "No scalable target exists for table " + resource_id + " for " + metric[dimension] + " - CREATING"
+                    if register_scalable_target(resource_id,metric[dimension],role_arn,min_tput,max_tput):
+                        print "Successfully registered scalable target for " + resource_id + " for " + metric[dimension]
+                    else:
+                        print "Failed to register scalable target for " + resource_id + " for " + metric[dimension]
+                        status=False
+
+                if scaling_policy_exists(resource_id,metric[dimension],metric['metric_type']):
+                    print "Scaling policy exists for table " + resource_id + " for " + metric['metric_type']
+                else:
+                    print "No scaling policy exists for table " + resource_id + " for " + metric['metric_type'] + " - CREATING"
+                    if put_scaling_policy(resource_id,metric['metric_type'],metric[dimension]):
+                        print "Successfully registered scaling policy for table " + resource_id + " for " + metric['metric_type']
+                    else:
+                        print "Failed to register scaling policy for table " + resource_id + " for " + metric['metric_type']
+                        status=False
+    else:
+        print "Unable to find role " + os.environ['rolename'] + " in IAM - TERMINATING"
+        status=False
+
+    return status
+
 def lambda_handler(event, context):
     status=True
     # print("Received event: " + json.dumps(event, indent=2))
     table_name = event['detail']['requestParameters']['tableName']
+    table_resource_id='table/' + table_name
 
-    if table_name:
-        print "New table detected " + table_name + " - Enabling autoscaling"
-        
-        rolename=os.environ['rolename']
-        max_tput=os.environ['max_tput']
-        min_tput=os.environ['min_tput']
-
-        role_arn=get_role_arn(os.environ['rolename'])
-        print "Role ARN is %s" % role_arn
-
-        if role_arn:
-            print "Role " + rolename + " found in IAM"
-
-            # Now see if the items we need exist and create if not
-            for metric in metric_info:
-                print "Checking for scalable target for " + metric['operation'] + " operations"
-                if scalable_target_exists(table_name,metric['scaleable_dimension']):
-                    print "Scalable target exists for table " + table_name + " for " + metric['scaleable_dimension']
-                else:
-                    print "No scalable target exists for table " + table_name + " for " + metric['scaleable_dimension'] + " - CREATING"
-                    if register_scalable_target(table_name,metric['scaleable_dimension'],role_arn,min_tput,max_tput):
-                        print "Successfully registered scalable target for " + table_name + " for " + metric['scaleable_dimension']
-                    else:
-                        print "Failed to register scalable target for " + table_name + " for " + metric['scaleable_dimension']
-                        status=False
-
-                if scaling_policy_exists(table_name,metric['scaleable_dimension'],metric['metric_type']):
-                    print "Scaling policy exists for table " + table_name + " for " + metric['metric_type']
-                else:
-                    print "No scaling policy exists for table " + table_name + " for " + metric['metric_type'] + " - CREATING"
-                    if put_scaling_policy(table_name,metric['metric_type'],metric['scaleable_dimension']):
-                        print "Successfully registered scaling policy for table " + table_name + " for " + metric['metric_type']
-                    else:
-                        print "Failed to register scaling policy for table " + table_name + " for " + metric['metric_type']
-                        status=False
-        else:
-            print "Unable to find role " + os.environ['rolename'] + " in IAM - TERMINATING"
-            status=False
+    # Process the table
+    if handle_resource(table_resource_id,'table'):
+        print "Successfully handled resource " +  table_resource_id
     else:
-        print "Unable to determine table name from incoming event"
-        print("Received event: " + json.dumps(event, indent=2))
+        print "Errors handling resource " +  table_resource_id
         status=False
+
+    # Does this table have indexes?  If so, we need to handle each one individually
+    if 'globalSecondaryIndexes' in event['detail']['requestParameters']:
+        for gsi in event['detail']['requestParameters']['globalSecondaryIndexes']:
+            print "Processing global index " + gsi['indexName']
+            index_resource_id='table/' + table_name + "/index/" + gsi['indexName']
+
+            if handle_resource(index_resource_id,'index'):
+                print "Successfully handled resource " +  index_resource_id
+            else:
+                print "Errors handling resource " +  index_resource_id
+                status=False
+    else:
+        print "No indexes defined on table"
 
     return status
