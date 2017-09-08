@@ -48,7 +48,7 @@
       },
       "MaxThroughput":{
          "Type":"String",
-         "Default":"40000",
+         "Default":"10000",
          "Description":"Maximum provisioned throughput to scale up to"
       }
    },
