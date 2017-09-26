@@ -193,7 +193,7 @@
             ]
          }
       },
-      "CreateTablePermission":{
+      "LambdaInvokePermission":{
          "Type":"AWS::Lambda::Permission",
          "Properties":{
             "Action":"lambda:InvokeFunction",
