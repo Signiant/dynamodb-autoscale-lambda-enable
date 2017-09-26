@@ -155,7 +155,7 @@ def handle_resource(resource_id,resource_type):
     max_tput=os.environ['max_tput']
     min_tput=os.environ['min_tput']
 
-    role_arn=get_role_arn(os.environ['rolename'])
+    role_arn=get_role_arn(rolename)
     print "Role ARN is %s" % role_arn
 
     if role_arn:
@@ -194,7 +194,7 @@ def handle_resource(resource_id,resource_type):
                         print "Failed to register scaling policy for table " + resource_id + " for " + metric['metric_type']
                         status=False
     else:
-        print "Unable to find role " + os.environ['rolename'] + " in IAM - TERMINATING"
+        print "Unable to find role " + rolename + " in IAM - TERMINATING"
         status=False
 
     return status
