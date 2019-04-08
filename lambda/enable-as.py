@@ -205,6 +205,16 @@ def lambda_handler(event, context):
     table_name = event['detail']['requestParameters']['tableName']
     table_resource_id='table/' + table_name
 
+    # Check the Billing Mode of the table before trying to enable autoscaling
+    print "Checking Billing Mode for table " + table_name
+    dynamodb_client = boto3.client('dynamodb')
+    response = dynamodb_client.describe_table(TableName=table_name)
+    if 'Table' in response:
+        if 'BillingModeSummary' in response['Table']:
+            if response['Table']['BillingModeSummary']['BillingMode'] == 'PAY_PER_REQUEST':
+                print("Table is set to on-demand capacity - no need to enable autoscaling")
+                return True
+
     # Process the table
     if handle_resource(table_resource_id,'table'):
         print "Successfully handled resource " +  table_resource_id
