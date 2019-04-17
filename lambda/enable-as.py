@@ -202,6 +202,11 @@ def handle_resource(resource_id,resource_type):
 def lambda_handler(event, context):
     status=True
     # print("Received event: " + json.dumps(event, indent=2))
+
+    if not 'tableName' in event['detail']['requestParameters']:
+        print("No tableName present in event detail requestParameters - skipping")
+        return True
+
     table_name = event['detail']['requestParameters']['tableName']
     table_resource_id='table/' + table_name
 
